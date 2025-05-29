@@ -1,98 +1,152 @@
 import numpy as np
 from PIL import Image
+import cv2
+from collections import deque
 
 
-def KMM(farray:np.ndarray, show:bool = True) -> np.ndarray:
-    uno = mark_black_pixels(farray)
-    k = 1
-    while not one_pixel_width_skeleton(uno):
-        print(f"Iteration {k}")
-        dos = change_ones_to_twos(uno)
-        tres = change_twos_to_threes(dos)
-        cuatro = change_to_fours(tres)
-        no_fours = remove_fours(cuatro)
-        i_max = farray.shape[0] * farray.shape[1]
-        tmp = no_fours.copy()
-        for N in [2, 3]:
-            for i in range(i_max):
-                i_row = i // no_fours.shape[1]
-                i_col = i % no_fours.shape[1]
-                if no_fours[i_row][i_col] == N:
-                    pixel_weight = calculate_pixel_weight(no_fours, i)
-                    if should_be_deleted(pixel_weight):
-                        tmp[i_row][i_col] = 0
-                    else:
-                        tmp[i_row][i_col] = 1
-               
-        uno = tmp.copy()
-        uno = map_to_ones(uno)
+def KMM(farray: np.ndarray, show: bool = True) -> np.ndarray:
+    img = farray.copy()
+    
+    if img.dtype != np.uint8:
+        img = img.astype(np.uint8)
+    
+    if np.max(img) > 1:
+        _, img = cv2.threshold(img, 127, 1, cv2.THRESH_BINARY_INV)
+    else:
+        img = (img == 0).astype(np.uint8)
+    
+    iteration = 0
+    while True:
+        prev_img = img.copy()
+        img = run_single_kmm_iteration(img)
+        
+        iteration += 1
         if show:
-            print_from_arr(uno)
-        k += 1
-    return uno 
+            print(f"Iteracja {iteration}")
+            print_from_arr(img)
+        
+        if np.array_equal(prev_img, img):
+            break
+            
+        if iteration > 50: 
+            break
+    
+    return img
 
-def should_be_deleted(pixel_weight:int) -> bool:
-    assert (pixel_weight >= 0 and pixel_weight <= 255), f"Pixel weight should be between 0 and 255, not {pixel_weight}"
-    weights_to_delete = np.array([
-        3, 5, 7, 12, 13, 14, 15, 20,
-        21, 22, 23, 28, 29, 30, 31, 48,
-        52, 53, 54, 55, 56, 60, 61, 62,
-        63, 65, 67, 69, 71, 77, 79, 80,
-        81, 83, 84, 85, 86, 87, 88, 89,
-        91, 92, 93, 94, 95, 97, 99, 101,
-        103, 109, 111, 112, 113, 115, 116, 117,
-        118, 119, 120, 121, 123, 124, 125, 126,
-        127, 131, 133, 135, 141, 143, 149, 151,
-        157, 159, 181, 183, 189, 191, 192, 193,
-        195, 197, 199, 205, 207, 208, 209, 211,
-        212, 213, 214, 215, 216, 217, 219, 220,
-        221, 222, 223, 224, 225, 227, 229, 231,
-        237, 239, 240, 241, 243, 244, 245, 246,
-        247, 248, 249, 251, 252, 253, 254, 255
-    ])
+
+def run_single_kmm_iteration(img: np.ndarray) -> np.ndarray:
+    result = img.copy()
+
+    for x in range(img.shape[0]):
+        for y in range(img.shape[1]):
+            if img[x, y] == 1:
+                is_contour = False
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = x + dx, y + dy
+                    if (0 <= nx < img.shape[0] and 0 <= ny < img.shape[1] and 
+                        img[nx, ny] == 0):
+                        is_contour = True
+                        break
+                
+                if is_contour:
+                    result[x, y] = 2
+    
+    for x in range(img.shape[0]):
+        for y in range(img.shape[1]):
+            if result[x, y] in [1, 2]:
+                neighbors = get_active_neighbors(result, x, y)
+                if 2 <= len(neighbors) <= 4 and are_neighbors_4_connected(result, neighbors):
+                    result[x, y] = 4
+    
+    result[result == 4] = 0
+    
+    for phase in [2, 3]:
+        for x in range(img.shape[0]):
+            for y in range(img.shape[1]):
+                if result[x, y] == phase:
+                    weight = calculate_pixel_weight(result, x, y)
+                    if should_be_deleted(weight):
+                        result[x, y] = 0
+                    else:
+                        result[x, y] = 1
+        
+        if phase == 2:
+            for x in range(img.shape[0]):
+                for y in range(img.shape[1]):
+                    if result[x, y] == 2:
+                        all_4_neighbors_active = True
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = x + dx, y + dy
+                            if (0 <= nx < img.shape[0] and 0 <= ny < img.shape[1]):
+                                if result[nx, ny] == 0:
+                                    all_4_neighbors_active = False
+                                    break
+                        
+                        if all_4_neighbors_active:
+                            result[x, y] = 3
+    
+    result[result > 1] = 1
+    
+    return result
+
+
+
+def should_be_deleted(pixel_weight: int) -> bool:
+    weights_to_delete = {
+        3, 5, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31, 48,
+        52, 53, 54, 55, 56, 60, 61, 62, 63, 65, 67, 69, 71, 77, 79, 80,
+        81, 83, 84, 85, 86, 87, 88, 89, 91, 92, 93, 94, 95, 97, 99, 101,
+        103, 109, 111, 112, 113, 115, 116, 117, 118, 119, 120, 121, 123, 
+        124, 125, 126, 127, 131, 133, 135, 141, 143, 149, 151, 157, 159, 
+        181, 183, 189, 191, 192, 193, 195, 197, 199, 205, 207, 208, 209, 
+        211, 212, 213, 214, 215, 216, 217, 219, 220, 221, 222, 223, 224, 
+        225, 227, 229, 231, 237, 239, 240, 241, 243, 244, 245, 246, 247, 
+        248, 249, 251, 252, 253, 254, 255
+    }
     
     return pixel_weight in weights_to_delete
     
-def calculate_pixel_weight(array:np.ndarray, index:int) -> int:    
-    assert (index >= 0 and index < array.shape[0] * array.shape[1]), "Index should be between 0 and the size of the array"
-    
+
+def calculate_pixel_weight(array: np.ndarray, x: int, y: int) -> int:
+
     mask = np.array([
         [128, 1, 2],
         [64, 0, 4],
         [32, 16, 8]
     ])
     
+    weight = 0
     rows, cols = array.shape
-    row = index // cols
-    col = index % cols
     
-    total = 0
-
-    for i in range(-1, 2):        
-        for j in range(-1, 2):    
-            r = row + i
-            c = col + j
-
-            if (r >= 0 and r < rows) and (c >= 0 and c < cols):
-                pixel_value = array[r, c]
-            else:
-                pixel_value = 0  
+    for i in range(-1, 2):
+        for j in range(-1, 2):
+            if i == 0 and j == 0:
+                continue
+                
+            nx = x + i
+            ny = y + j
             
-            total += mask[i+1, j+1] * pixel_value if pixel_value == 0 else 1
+            if 0 <= nx < rows and 0 <= ny < cols:
+                if array[nx, ny] != 0:
+                    weight += mask[i + 1, j + 1]
+    
+    return weight
 
-    return total
+
 
 def remove_fours(array:np.ndarray) -> np.ndarray:
     t = array.copy()
     t[t == 4] = 0
     return t
 
-def mark_black_pixels(array:np.ndarray) -> np.ndarray:
-    assert np.all(np.isin(array, [0, 255])), "Array should be with 0 (black), and 255 (white) values only"
-    t = array.copy()
-    t[t == 0] = 1
-    t[t == 255] = 0
-    return t
+def mark_black_pixels(array: np.ndarray) -> np.ndarray:
+    assert np.all(np.isin(array, [0, 255])), "Array should contain only 0 and 255 values"
+    
+    result = array.copy()
+    result[array == 0] = 1 
+    result[array == 255] = 0 
+    
+    return result
 
 def change_ones_to_twos(array:np.ndarray) -> np.ndarray:
     assert np.all(np.isin(array, [0, 1])), "Array should be with 0 and 1 values only"
@@ -181,15 +235,14 @@ def one_pixel_width_skeleton(array: np.ndarray) -> bool:
                 return False
     return True    
 
-def print_from_arr(array:np.ndarray) -> None:
-    assert np.all(np.isin(array, [0, 1])), "Array should be with 0 and 1 values only"
+
+def print_from_arr(array: np.ndarray) -> None:
+    display = np.zeros_like(array, dtype=np.uint8)
+    display[array == 0] = 255  
+    display[array == 1] = 0   
     
-    t = array.copy()
-    t[array == 1] = 0
-    t[array == 0] = 255
-    t = t.astype(np.uint8)
-    img = Image.fromarray(t)
-    img.show()  
+    img = Image.fromarray(display)
+    img.show()
     
 def map_to_ones(array:np.ndarray) -> np.ndarray:
     assert np.all(np.isin(array, [0, 1, 2, 3, 4])), "Array should be with 0, 1, 2, 3 and 4 values only"
@@ -201,3 +254,34 @@ def map_to_ones(array:np.ndarray) -> np.ndarray:
     t[array == 3] = 1
     t[array == 4] = 1
     return t
+
+def get_active_neighbors(img: np.ndarray, x: int, y: int) -> list:
+    neighbors = []
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < img.shape[0] and 0 <= ny < img.shape[1] and 
+                img[nx, ny] != 0):
+                neighbors.append((nx, ny))
+    return neighbors
+
+def are_neighbors_4_connected(img: np.ndarray, neighbors: list) -> bool:
+    if not neighbors:
+        return False
+    
+    visited = set()
+    queue = deque([neighbors[0]])
+    visited.add(neighbors[0])
+    
+    while queue:
+        cx, cy = queue.popleft()
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = cx + dx, cy + dy
+            if (nx, ny) in neighbors and (nx, ny) not in visited:
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+    
+    return len(visited) == len(neighbors)
+
