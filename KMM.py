@@ -140,9 +140,6 @@ def remove_fours(array:np.ndarray) -> np.ndarray:
     return t
 
 def mark_black_pixels(array: np.ndarray) -> np.ndarray:
-    """
-    Przygotuj obraz do przetwarzania - zamień czarne piksele na 1, białe na 0.
-    """
     assert np.all(np.isin(array, [0, 255])), "Array should contain only 0 and 255 values"
     
     result = array.copy()
